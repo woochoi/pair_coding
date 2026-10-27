@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>반딧불이 잡기</title>
+<style>
+  :root {
+    --page: #0d1620;
+    --forest: #1a2b3c;
+    --text: #e8f1e4;
+    --muted: #9fb2b5;
+    --glow: #f4f28a;
+    --warn: #ff9a85;
+    --scrim: rgba(8, 14, 20, 0.62);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; min-height: 100%; }
+
+  body {
+    background: var(--page);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 16px;
+  }
+
+  .game {
+    width: 100%;
+    max-width: 800px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px 16px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    color: var(--glow);
+    text-shadow: 0 0 12px rgba(244, 242, 138, 0.45);
+  }
+
+  .stats {
+    display: flex;
+    gap: 16px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stats strong { color: var(--glow); }
+  .stats .low strong { color: var(--warn); }
+
+  .board {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--forest);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: crosshair;
+  }
+
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 16px;
+    text-align: center;
+    background: var(--scrim);
+  }
+
+  .overlay[hidden] { display: none; }
+
+  .overlay h2 { margin: 0; font-size: 1.75rem; }
+  .overlay p { margin: 0; color: var(--muted); line-height: 1.5; }
+  .overlay .final { color: var(--text); font-size: 1.25rem; }
+  .overlay .final strong { color: var(--glow); font-size: 2rem; }
+
+  button {
+    font: inherit;
+    font-size: 1.1rem;
+    font-weight: 700;
+    padding: 12px 32px;
+    border: none;
+    border-radius: 999px;
+    background: var(--glow);
+    color: var(--forest);
+    cursor: pointer;
+    box-shadow: 0 0 20px rgba(244, 242, 138, 0.4);
+  }
+
+  button:hover { filter: brightness(1.08); }
+  button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+
+  @media (max-width: 560px) {
+    .board { aspect-ratio: 3 / 4; }
+    h1 { font-size: 1.25rem; }
+  }
+</style>
+</head>
+<body>
+<main class="game">
+  <header>
+    <h1>반딧불이 잡기</h1>
+    <div class="stats">
+      <span>점수: <strong id="score">0</strong>점</span>
+      <span id="time-box">남은 시간: <strong id="time">30</strong>초</span>
+    </div>
+  </header>
+
+  <div class="board">
+    <canvas id="board"></canvas>
+
+    <div class="overlay" id="ready-overlay">
+      <h2>반딧불이 잡기</h2>
+      <p>30초 동안 나타났다 사라지는 반딧불이를<br>클릭하거나 터치해서 최대한 많이 잡아보세요.</p>
+      <button type="button" id="start-btn">시작하기</button>
+    </div>
+
+    <div class="overlay" id="over-overlay" hidden>
+      <h2>게임 종료!</h2>
+      <p class="final" aria-live="polite">최종 점수: <strong id="final-score">0</strong>점</p>
+      <button type="button" id="restart-btn">다시하기</button>
+    </div>
+  </div>
+</main>
+
+<script>
+  const GAME_TIME = 30;          // 초
+  const MAX_FIREFLIES = 7;       // 게임 중 동시에 떠 있는 최대 수
+  const AMBIENT_FIREFLIES = 4;   // 대기/종료 화면의 장식용 반딧불이 수
+
+  const canvas = document.getElementById('board');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const timeEl = document.getElementById('time');
+  const timeBox = document.getElementById('time-box');
+  const readyOverlay = document.getElementById('ready-overlay');
+  const overOverlay = document.getElementById('over-overlay');
+  const finalScoreEl = document.getElementById('final-score');
+  const startBtn = document.getElementById('start-btn');
+  const restartBtn = document.getElementById('restart-btn');
+
+  let gameState = 'READY';  // READY | PLAYING | GAMEOVER
+  let score = 0;
+  let timeLeft = GAME_TIME;
+  let fireflies = [];       // { x, y, size, vx, vy, born, life, phase, blinkSpeed }
+  let effects = [];         // 잡았을 때의 반짝임 / +1 표시
+
+  let width = 0;
+  let height = 0;
+  let startTime = 0;
+  let lastFrame = 0;
+  let nextSpawnAt = 0;
+  let stars = [];
+  let trees = [];
+
+  const rand = (min, max) => min + Math.random() * (max - min);
+
+  // ---- 화면 크기 / 배경 ----
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    width = rect.width;
+    height = rect.height;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildScenery();
+    for (const f of fireflies) {
+      f.x = Math.min(f.x, width);
+      f.y = Math.min(f.y, height);
+    }
+  }
+
+  function buildScenery() {
+    stars = Array.from({ length: Math.round(width * height / 6000) }, () => ({
+      x: rand(0, width),
+      y: rand(0, height * 0.45),
+      r: rand(0.4, 1.3),
+      phase: rand(0, Math.PI * 2),
+    }));
+
+    trees = [];
+    // 뒤쪽 나무는 옅게, 앞쪽 나무는 진하게
+    for (const layer of [{ color: '#14222f', base: 0.62, scale: 0.9 }, { color: '#0b141c', base: 0.75, scale: 1.2 }]) {
+      let x = rand(-30, 0);
+      while (x < width + 30) {
+        const w = rand(40, 80) * layer.scale;
+        trees.push({ x, w, h: rand(0.25, 0.45) * height * layer.scale, top: height * layer.base, color: layer.color });
+        x += w * rand(0.45, 0.8);
+      }
+    }
+  }
+
+  function drawScenery(now) {
+    const sky = ctx.createLinearGradient(0, 0, 0, height);
+    sky.addColorStop(0, '#0f1c29');
+    sky.addColorStop(1, '#1a2b3c');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, width, height);
+
+    for (const s of stars) {
+      ctx.globalAlpha = 0.4 + 0.4 * Math.sin(s.phase + now / 900);
+      ctx.fillStyle = '#dfe8ff';
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    for (const t of trees) {
+      ctx.fillStyle = t.color;
+      ctx.beginPath();
+      ctx.moveTo(t.x + t.w / 2, t.top - t.h);
+      ctx.lineTo(t.x + t.w, t.top + t.h * 0.15);
+      ctx.lineTo(t.x, t.top + t.h * 0.15);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillRect(t.x, t.top + t.h * 0.1, t.w, height);
+    }
+  }
+
+  // ---- 반딧불이 ----
+
+  function spawnFirefly(now) {
+    const margin = 24;
+    fireflies.push({
+      x: rand(margin, width - margin),
+      y: rand(margin, height * 0.85),
+      size: rand(5, 9),
+      vx: rand(-40, 40),
+      vy: rand(-30, 30),
+      born: now,
+      life: rand(1800, 3200),
+      phase: rand(0, Math.PI * 2),
+      blinkSpeed: rand(4, 8),
+    });
+  }
+
+  function fireflyAlpha(f, now) {
+    const age = now - f.born;
+    const fadeIn = Math.min(1, age / 300);
+    const fadeOut = Math.min(1, (f.life - age) / 500);
+    const blink = 0.55 + 0.45 * Math.sin(f.phase + (age / 1000) * f.blinkSpeed);
+    return Math.max(0, Math.min(fadeIn, fadeOut)) * blink;
+  }
+
+  function updateFireflies(now, dt) {
+    for (const f of fireflies) {
+      // 살짝 방향을 바꾸며 떠다니기
+      f.vx = Math.max(-60, Math.min(60, f.vx + rand(-90, 90) * dt));
+      f.vy = Math.max(-45, Math.min(45, f.vy + rand(-70, 70) * dt));
+      f.x += f.vx * dt;
+      f.y += f.vy * dt;
+      if (f.x < 10 || f.x > width - 10) f.vx *= -1;
+      if (f.y < 10 || f.y > height - 10) f.vy *= -1;
+      f.x = Math.max(10, Math.min(width - 10, f.x));
+      f.y = Math.max(10, Math.min(height - 10, f.y));
+    }
+    fireflies = fireflies.filter(f => now - f.born < f.life);
+  }
+
+  function drawFirefly(f, now) {
+    const a = fireflyAlpha(f, now);
+    const glowR = f.size * 4;
+    const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, glowR);
+    g.addColorStop(0, `rgba(244, 242, 138, ${0.85 * a})`);
+    g.addColorStop(0.3, `rgba(200, 232, 90, ${0.35 * a})`);
+    g.addColorStop(1, 'rgba(200, 232, 90, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, glowR, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = `rgba(255, 255, 220, ${a})`;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.size * 0.55, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ---- 잡기 효과 ----
+
+  function addCatchEffect(x, y, now) {
+    effects.push({ type: 'text', x, y, born: now, life: 700 });
+    for (let i = 0; i < 10; i++) {
+      const angle = (Math.PI * 2 * i) / 10 + rand(-0.2, 0.2);
+      const speed = rand(60, 140);
+      effects.push({ type: 'spark', x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, born: now, life: 500 });
+    }
+  }
+
+  function updateAndDrawEffects(now, dt) {
+    effects = effects.filter(e => now - e.born < e.life);
+    for (const e of effects) {
+      const t = (now - e.born) / e.life;
+      if (e.type === 'spark') {
+        e.x += e.vx * dt;
+        e.y += e.vy * dt;
+        ctx.fillStyle = `rgba(244, 242, 138, ${1 - t})`;
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = `rgba(244, 242, 138, ${1 - t})`;
+        ctx.font = 'bold 20px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('+1', e.x, e.y - 16 - t * 30);
+      }
+    }
+  }
+
+  // ---- 게임 상태 ----
+
+  function updateHud() {
+    scoreEl.textContent = score;
+    timeEl.textContent = timeLeft;
+    timeBox.classList.toggle('low', gameState === 'PLAYING' && timeLeft <= 5);
+  }
+
+  function startGame() {
+    const now = performance.now();
+    gameState = 'PLAYING';
+    score = 0;
+    timeLeft = GAME_TIME;
+    fireflies = [];
+    effects = [];
+    startTime = now;
+    nextSpawnAt = now + 300;
+    readyOverlay.hidden = true;
+    overOverlay.hidden = true;
+    updateHud();
+  }
+
+  function endGame() {
+    gameState = 'GAMEOVER';
+    timeLeft = 0;
+    finalScoreEl.textContent = score;
+    overOverlay.hidden = false;
+    updateHud();
+    restartBtn.focus();
+  }
+
+  function backToReady() {
+    gameState = 'READY';
+    score = 0;
+    timeLeft = GAME_TIME;
+    overOverlay.hidden = true;
+    readyOverlay.hidden = false;
+    updateHud();
+    startBtn.focus();
+  }
+
+  function spawnInterval(now) {
+    if (gameState !== 'PLAYING') return 1200;
+    // 시간이 지날수록 더 자주 등장
+    const progress = Math.min(1, (now - startTime) / (GAME_TIME * 1000));
+    return 900 - 450 * progress;
+  }
+
+  function tick(now) {
+    const dt = Math.min(0.05, (now - lastFrame) / 1000);
+    lastFrame = now;
+
+    if (gameState === 'PLAYING') {
+      const elapsed = (now - startTime) / 1000;
+      const remaining = Math.max(0, GAME_TIME - Math.floor(elapsed));
+      if (remaining !== timeLeft) {
+        timeLeft = remaining;
+        updateHud();
+      }
+      if (elapsed >= GAME_TIME) endGame();
+    }
+
+    const limit = gameState === 'PLAYING' ? MAX_FIREFLIES : AMBIENT_FIREFLIES;
+    if (now >= nextSpawnAt) {
+      if (fireflies.length < limit) spawnFirefly(now);
+      nextSpawnAt = now + spawnInterval(now) * rand(0.7, 1.3);
+    }
+
+    updateFireflies(now, dt);
+
+    drawScenery(now);
+    for (const f of fireflies) drawFirefly(f, now);
+    updateAndDrawEffects(now, dt);
+
+    requestAnimationFrame(tick);
+  }
+
+  canvas.addEventListener('pointerdown', (event) => {
+    if (gameState !== 'PLAYING') return;
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const now = performance.now();
+
+    // 터치로도 잡기 쉽도록 판정 반경을 넉넉하게
+    let hit = null;
+    let best = Infinity;
+    for (const f of fireflies) {
+      const d = Math.hypot(f.x - x, f.y - y);
+      if (d < Math.max(f.size * 3, 24) && d < best) {
+        hit = f;
+        best = d;
+      }
+    }
+    if (!hit) return;
+
+    fireflies = fireflies.filter(f => f !== hit);
+    score += 1;
+    addCatchEffect(hit.x, hit.y, now);
+    updateHud();
+  });
+
+  startBtn.addEventListener('click', startGame);
+  restartBtn.addEventListener('click', backToReady);
+  window.addEventListener('resize', resize);
+
+  resize();
+  updateHud();
+  lastFrame = performance.now();
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>

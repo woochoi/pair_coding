@@ -114,6 +114,24 @@
   button:hover { filter: brightness(1.08); }
   button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
 
+  .controls {
+    display: flex;
+    justify-content: center;
+  }
+
+  .controls button[hidden] { display: none; }
+
+  button.secondary {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--muted);
+    box-shadow: none;
+    font-size: 1rem;
+    padding: 10px 28px;
+  }
+
+  button.secondary:hover { color: var(--text); border-color: var(--text); filter: none; }
+
   @media (max-width: 560px) {
     .board { aspect-ratio: 3 / 4; }
     h1 { font-size: 1.25rem; }
@@ -145,6 +163,10 @@
       <button type="button" id="restart-btn">다시하기</button>
     </div>
   </div>
+
+  <div class="controls">
+    <button type="button" class="secondary" id="quit-btn" hidden>그만하기</button>
+  </div>
 </main>
 
 <script>
@@ -162,6 +184,7 @@
   const finalScoreEl = document.getElementById('final-score');
   const startBtn = document.getElementById('start-btn');
   const restartBtn = document.getElementById('restart-btn');
+  const quitBtn = document.getElementById('quit-btn');
 
   let gameState = 'READY';  // READY | PLAYING | GAMEOVER
   let score = 0;
@@ -352,6 +375,7 @@
     nextSpawnAt = now + 300;
     readyOverlay.hidden = true;
     overOverlay.hidden = true;
+    quitBtn.hidden = false;
     updateHud();
   }
 
@@ -360,16 +384,20 @@
     timeLeft = 0;
     finalScoreEl.textContent = score;
     overOverlay.hidden = false;
+    quitBtn.hidden = true;
     updateHud();
     restartBtn.focus();
   }
 
+  // 다시하기, 그만하기 모두 처음 시작 화면으로 돌아간다
   function backToReady() {
     gameState = 'READY';
     score = 0;
     timeLeft = GAME_TIME;
+    effects = [];
     overOverlay.hidden = true;
     readyOverlay.hidden = false;
+    quitBtn.hidden = true;
     updateHud();
     startBtn.focus();
   }
@@ -437,6 +465,7 @@
 
   startBtn.addEventListener('click', startGame);
   restartBtn.addEventListener('click', backToReady);
+  quitBtn.addEventListener('click', backToReady);
   window.addEventListener('resize', resize);
 
   resize();
